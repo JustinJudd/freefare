@@ -25,6 +25,9 @@ package freefare
 #undef type
 */
 import "C"
+import (
+	"fmt"
+)
 
 // Ntag21x cryptography modes. Compute the bitwise or of these constants and the TODO: ?
 // key number to select a certain cryptography mode.
@@ -387,6 +390,82 @@ func (t Ntag21xTag) WriteUserData(data [144]byte) error {
 		if err != nil {
 			return err // TODO: quick return or nah??
 			// TODO: revert tag?
+		}
+	}
+	return nil
+}
+
+// NOTE: Many of the ntag21x_??? functions have not been working for me, so falling back to legacy functions below
+
+/*
+ReadBlock reads a single Block and returns the data
+
+Uses ClassicBlock instead of MifareUltralightPage, because `mifare_ultralight_read` can only read the first 15 blocks before failing
+*/
+func (t Ntag21xTag) ReadBlock(block byte) ([4]byte, error) {
+	cdata := C.MifareClassicBlock{}
+
+	r, err := C.mifare_classic_read(t.ctag, C.MifareClassicBlockNumber(block), &cdata)
+	if r == 0 {
+		bdata := [4]byte{}
+		for i, d := range cdata[:4] {
+			bdata[i] = byte(d)
+		}
+
+		return bdata, nil
+	}
+
+	return [4]byte{}, t.TranslateError(err)
+}
+
+/*
+ReadRange reads and returns all of the data between all sets of pages/blocks inclusive
+*/
+func (t Ntag21xTag) ReadRange(startBlock, endBlock byte) ([]byte, error) {
+	var data []byte
+
+	for i := startBlock; i <= endBlock; i++ {
+		in, err := t.ReadBlock(i)
+		if err != nil {
+			return data, fmt.Errorf("can't read content at page %d: %w", i, err)
+		}
+		for _, b := range in {
+			data = append(data, b)
+		}
+	}
+
+	return data, nil
+}
+
+/*
+WriteBlock writes a single Block of 4 bytes
+
+Uses ClassicBlock instead of MifareUltralightPage, because `mifare_ultralight_write` can only write the first 15 blocks before failing
+*/
+func (t Ntag21xTag) WriteBlock(block byte, data [4]byte) error {
+	r, err := C.mifare_classic_write(
+		t.ctag,
+		C.MifareClassicBlockNumber(block), (*C.uchar)(&data[0]),
+	)
+	if r == 0 {
+		return nil
+	}
+	return t.TranslateError(err)
+}
+
+/*
+WriteFullUserData writes the full content of the provided data into the user portion of the tag.
+*/
+func (t Ntag21xTag) WriteFullUserData(data []byte) error {
+	for i := 0; i < (len(data) / 4); i++ {
+		var toWrite = [4]byte{}
+		for j := range toWrite { // Write only 4 bytes at a time per block
+			toWrite[j] = data[(i*4)+j]
+		}
+		err := t.WriteBlock((uint8(i))+4, toWrite)
+		if err != nil {
+			fmt.Printf("Error writing block %d\n", (i)+4)
+			return err
 		}
 	}
 	return nil
